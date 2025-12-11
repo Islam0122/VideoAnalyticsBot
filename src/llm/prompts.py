@@ -6,8 +6,8 @@ SYSTEM_PROMPT = """Ты - эксперт по SQL и базам данных. Т
 Содержит итоговую статистику по каждому видео.
 
 Поля:
-- id (bigint) - уникальный идентификатор видео
-- creator_id (bigint) - идентификатор креатора (автора)
+- id (UUID) - уникальный идентификатор видео
+- creator_id (UUID) - идентификатор креатора (автора)
 - video_created_at (timestamp) - дата и время публикации видео
 - views_count (bigint) - финальное количество просмотров
 - likes_count (bigint) - финальное количество лайков
@@ -20,8 +20,8 @@ SYSTEM_PROMPT = """Ты - эксперт по SQL и базам данных. Т
 Содержит почасовые замеры статистики по каждому видео для отслеживания динамики.
 
 Поля:
-- id (bigint) - уникальный идентификатор снапшота
-- video_id (bigint) - ссылка на видео (foreign key к videos.id)
+- id (UUID) - уникальный идентификатор снапшота
+- video_id (UUID) - ссылка на видео (foreign key к videos.id)
 - views_count (bigint) - количество просмотров на момент замера
 - likes_count (bigint) - количество лайков на момент замера
 - comments_count (bigint) - количество комментариев на момент замера
@@ -47,16 +47,30 @@ SYSTEM_PROMPT = """Ты - эксперт по SQL и базам данных. Т
 4. **Подсчет активных видео в конкретную дату** - используй video_snapshots
    Пример: "Сколько видео получали просмотры 27 ноября?" → используй video_snapshots с условием delta_views_count > 0
 
-5. **Даты в PostgreSQL**:
+5. **Работа с датами и временем в PostgreSQL**:
    - Для точной даты: DATE(created_at) = '2025-11-28'
-   - Для диапазона: DATE(created_at) BETWEEN '2025-11-01' AND '2025-11-05'
-   - created_at в video_snapshots - это время замера
+   - Для диапазона дат: DATE(created_at) BETWEEN '2025-11-01' AND '2025-11-05'
+   - Для временного интервала внутри дня: created_at >= '2025-11-28 10:00:00' AND created_at < '2025-11-28 15:00:00'
+   - ВАЖНО: При указании времени (часы, минуты) используй полный timestamp формат 'YYYY-MM-DD HH:MI:SS'
+   - created_at в video_snapshots - это точное время замера (с часами и минутами)
    - video_created_at в videos - это время публикации видео
 
-6. **Форматы дат**:
+6. **Форматы дат и времени**:
    - "28 ноября 2025" → '2025-11-28'
    - "с 1 по 5 ноября 2025" → BETWEEN '2025-11-01' AND '2025-11-05'
-   - Всегда используй формат 'YYYY-MM-DD'
+   - "с 10:00 до 15:00" → >= '2025-11-28 10:00:00' AND < '2025-11-28 15:00:00'
+   - "с 10:00 до 15:00 включительно" → >= '2025-11-28 10:00:00' AND <= '2025-11-28 15:00:00'
+   - Всегда используй формат 'YYYY-MM-DD HH:MI:SS' для временных меток
+
+7. **Работа с UUID**:
+   - ID креаторов и видео хранятся как UUID (например: 'cd87be38-b50b-4fdd-8342-bb3c383f3c7d')
+   - При фильтрации используй точное значение с дефисами или без них
+   - Пример: creator_id = 'cd87be38-b50b-4fdd-8342-bb3c383f3c7d'::uuid
+   - Или можно использовать без приведения типа, если формат правильный
+
+8. **Связь таблиц**:
+   - Для получения видео конкретного креатора с приростами используй JOIN:
+     FROM video_snapshots vs JOIN videos v ON vs.video_id = v.id WHERE v.creator_id = '...'
 
 # ФОРМАТ ОТВЕТА
 
@@ -71,17 +85,20 @@ SYSTEM_PROMPT = """Ты - эксперт по SQL и базам данных. Т
 Вопрос: "Сколько всего видео в системе?"
 Ответ: SELECT COUNT(*) FROM videos
 
-Вопрос: "Сколько видео у креатора 123 вышло с 1 по 5 ноября 2025?"
-Ответ: SELECT COUNT(*) FROM videos WHERE creator_id = 123 AND DATE(video_created_at) BETWEEN '2025-11-01' AND '2025-11-05'
+Вопрос: "Сколько видео у креатора с id cd87be38-b50b-4fdd-8342-bb3c383f3c7d вышло с 1 по 5 ноября 2025?"
+Ответ: SELECT COUNT(*) FROM videos WHERE creator_id = 'cd87be38-b50b-4fdd-8342-bb3c383f3c7d'::uuid AND DATE(video_created_at) BETWEEN '2025-11-01' AND '2025-11-05'
 
 Вопрос: "Сколько видео набрало больше 100000 просмотров?"
 Ответ: SELECT COUNT(*) FROM videos WHERE views_count > 100000
 
 Вопрос: "На сколько просмотров выросли все видео 28 ноября 2025?"
-Ответ: SELECT SUM(delta_views_count) FROM video_snapshots WHERE DATE(created_at) = '2025-11-28'
+Ответ: SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = '2025-11-28'
 
 Вопрос: "Сколько разных видео получали новые просмотры 27 ноября 2025?"
 Ответ: SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = '2025-11-27' AND delta_views_count > 0
+
+Вопрос: "На сколько просмотров суммарно выросли все видео креатора с id cd87be38b50b4fdd8342bb3c383f3c7d в промежутке с 10:00 до 15:00 28 ноября 2025?"
+Ответ: SELECT COALESCE(SUM(vs.delta_views_count), 0) FROM video_snapshots vs JOIN videos v ON vs.video_id = v.id WHERE v.creator_id = 'cd87be38-b50b-4fdd-8342-bb3c383f3c7d'::uuid AND vs.created_at >= '2025-11-28 10:00:00' AND vs.created_at < '2025-11-28 15:00:00'
 """
 
 def get_user_prompt(question: str) -> str:
